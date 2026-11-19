@@ -146,6 +146,24 @@ export function initTouch(state, input) {
     setTimeout(() => { swapBtn.style.background = 'rgba(30,90,160,0.55)'; }, 120);
   }, { passive: false });
 
+  // GRENADE (v2) — small, left of FIRE, same row. Edge flag; consumer clears it.
+  const grenBtn = makeButton('GREN', 56, 132, 26, 'rgba(60,120,40,0.55)');
+  grenBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    input.touch.grenade = true;
+    grenBtn.style.background = 'rgba(90,180,60,0.85)';
+    setTimeout(() => { grenBtn.style.background = 'rgba(60,120,40,0.55)'; }, 120);
+  }, { passive: false });
+
+  // SKILL (v2) — small, left of SWAP, above GRENADE. Edge flag; consumer clears it.
+  const skillBtn = makeButton('SKILL', 56, 132, 96, 'rgba(120,60,160,0.55)');
+  skillBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    input.touch.skill = true;
+    skillBtn.style.background = 'rgba(180,90,230,0.85)';
+    setTimeout(() => { skillBtn.style.background = 'rgba(120,60,160,0.55)'; }, 120);
+  }, { passive: false });
+
   // ---- visibility ----------------------------------------------------------
   function refresh() {
     root.style.display = isTouch() ? 'block' : 'none';

@@ -9,7 +9,7 @@ export function createInput(canvas) {
   const input = {
     keys: new Set(),
     mouse: { x: 0, y: 0, sx: 0, sy: 0, down: false },
-    touch: { active: false, moveX: 0, moveY: 0, fire: false, swap: false },
+    touch: { active: false, moveX: 0, moveY: 0, fire: false, swap: false, grenade: false, skill: false },
   };
 
   function updateMouse(e) {

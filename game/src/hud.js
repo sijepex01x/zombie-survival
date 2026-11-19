@@ -8,6 +8,9 @@ import { CONFIG } from './config.js';
 const SHOP = (CONFIG && CONFIG.SHOP) || [];
 const DAY_LENGTH = (CONFIG && CONFIG.DAY_LENGTH) || 90;
 const WEAPONS = (CONFIG && CONFIG.WEAPONS) || {};
+const WEAPON_ORDER = (CONFIG && CONFIG.WEAPON_ORDER) || ['pistol', 'shotgun', 'rifle'];
+const CHARACTERS = (CONFIG && CONFIG.CHARACTERS) || {};
+const CHARACTER_ORDER = (CONFIG && CONFIG.CHARACTER_ORDER) || [];
 
 // --- small helpers ---------------------------------------------------------
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -79,10 +82,72 @@ function drawButton(ctx, r, label, font, opts = {}) {
 function btnRect(cx, y, w, h) { return { x: cx - w / 2, y, w, h }; }
 
 function titleLayout(view) {
+  const W = view.w, H = view.h;
+  const small = W < 500;
+  const logoSize = small ? 52 : 72;
+  const logoTop = H * 0.05;
+  const subtitleY = logoTop + logoSize + 26;
+  const labelY = subtitleY + 30;
+  const cardW = small ? Math.floor((W - 30) / 2) : 170;
+  const cardH = small ? 138 : 148;
+  const gap = 10;
+  const cols = small ? 2 : 4;
+  const gridW = cols * cardW + (cols - 1) * gap;
+  const x0 = (W - gridW) / 2;
+  const y0 = labelY + 18;
+  const rows = Math.ceil(CHARACTER_ORDER.length / cols);
+  const cards = CHARACTER_ORDER.map((id, i) => ({
+    id,
+    rect: {
+      x: x0 + (i % cols) * (cardW + gap),
+      y: y0 + Math.floor(i / cols) * (cardH + gap),
+      w: cardW, h: cardH,
+    },
+  }));
+  const controlsY = y0 + rows * cardH + (rows - 1) * gap + 26;
   const bw = Math.min(280, view.w - 80);
+  const startBtn = btnRect(view.w / 2, view.h * 0.72, bw, 52);
+  const tutBtn = btnRect(view.w / 2, startBtn.y + 52 + 10, Math.min(200, view.w - 120), 40);
+  return { startBtn, tutBtn, cards, labelY, controlsY, logoSize, logoTop, subtitleY };
+}
+
+function tutorialLayout(view) {
+  const W = view.w, H = view.h;
+  const pw = Math.min(520, W - 24);
+  const ph = Math.min(340, H - 120);
+  const px = (W - pw) / 2, py = (H - ph) / 2;
   return {
-    startBtn: btnRect(view.w / 2, view.h * 0.72, bw, 52),
+    panel: { x: px, y: py, w: pw, h: ph },
+    backBtn: { x: px + 16, y: py + ph - 58, w: 100, h: 42 },
+    nextBtn: { x: px + pw - 116, y: py + ph - 58, w: 100, h: 42 },
+    skipBtn: { x: px + pw - 76, y: py + 12, w: 60, h: 30 },
   };
+}
+
+// "?" help button (v2): below the minimap, top-left. Clickable in-game.
+// Narrow screens stack the wave strip at y=72, so there the button goes
+// under the strip on the left (the stats live on the right).
+function helpButtonRect(view) {
+  const small = view.w < 500;
+  const mm = small ? 84 : Math.min(150, Math.max(96, view.w * 0.30));
+  if (view.w < 700) return { x: 10, y: 126, w: 28, h: 28 };
+  return { x: 10, y: 10 + mm + 8, w: 28, h: 28 };
+}
+
+// Mini blocky figure for the character cards (v2): square head, torso, legs.
+function drawMiniBlocky(ctx, cx, top, s, color) {
+  ctx.fillStyle = '#1a2a33';
+  ctx.fillRect(cx - 7 * s, top + 26 * s, 6 * s, 10 * s);
+  ctx.fillRect(cx + 1 * s, top + 26 * s, 6 * s, 10 * s);
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - 9 * s, top + 10 * s, 18 * s, 16 * s);
+  ctx.fillStyle = '#e8b88a';
+  ctx.fillRect(cx - 7 * s, top, 14 * s, 10 * s);
+  ctx.fillStyle = '#4a2f18';
+  ctx.fillRect(cx - 7 * s, top, 14 * s, 3 * s);
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(cx + 2 * s, top + 4 * s, 2 * s, 2 * s);
+  ctx.fillRect(cx + 2 * s, top + 7 * s, 2 * s, 2 * s);
 }
 
 function shopLayout(view) {
@@ -120,9 +185,17 @@ function gameoverLayout(view) {
 // menuRects(state, view) -> rects keyed by action. The single source of
 // truth for every clickable area; drawScreen() uses the same layouts.
 export function menuRects(state, view) {
-  const out = { buy: {} };
+  const out = { buy: {}, char: {} };
   if (state.mode === 'title') {
-    out.start = titleLayout(view).startBtn;
+    const L = titleLayout(view);
+    out.start = L.startBtn;
+    out.tutorial = L.tutBtn;
+    for (const c of L.cards) out.char[c.id] = c.rect;
+  } else if (state.mode === 'tutorial') {
+    const L = tutorialLayout(view);
+    out.tutBack = L.backBtn;
+    out.tutNext = L.nextBtn;
+    out.tutSkip = L.skipBtn;
   } else if (state.mode === 'shop') {
     const L = shopLayout(view);
     for (const r of L.rows) out.buy[r.id] = r.rect;
@@ -136,6 +209,10 @@ export function menuRects(state, view) {
     out.restart = L.retryBtn;
     out.quitToTitle = L.quitBtn;
   }
+  // "?" help button is clickable whenever the HUD shows (playing/shop/paused).
+  if (state.mode === 'playing' || state.mode === 'shop' || state.mode === 'paused') {
+    out.tutorial = helpButtonRect(view);
+  }
   return out;
 }
 
@@ -147,6 +224,13 @@ export function click(state, sx, sy, view) {
   if (rects.restart && inRect(sx, sy, rects.restart)) return 'restart';
   if (rects.closeShop && inRect(sx, sy, rects.closeShop)) return 'closeShop';
   if (rects.quitToTitle && inRect(sx, sy, rects.quitToTitle)) return 'quitToTitle';
+  if (rects.tutorial && inRect(sx, sy, rects.tutorial)) return 'tutorial';
+  if (rects.tutNext && inRect(sx, sy, rects.tutNext)) return 'tutNext';
+  if (rects.tutBack && inRect(sx, sy, rects.tutBack)) return 'tutBack';
+  if (rects.tutSkip && inRect(sx, sy, rects.tutSkip)) return 'tutSkip';
+  for (const id of Object.keys(rects.char)) {
+    if (inRect(sx, sy, rects.char[id])) return 'char:' + id;
+  }
   for (const id of Object.keys(rects.buy)) {
     if (inRect(sx, sy, rects.buy[id])) return 'buy:' + id;
   }
@@ -165,9 +249,14 @@ export function drawHUD(ctx, state, view) {
   const fSmall = `bold ${small ? 11 : 12}px system-ui, sans-serif`;
   const fBig = `bold ${small ? 18 : 22}px system-ui, sans-serif`;
 
-  // ---- top-left: HP / armor / stamina ------------------------------------
+  // ---- top-LEFT: minimap (v2 swap — was top-right) -------------------------
+  const mm = small ? 84 : Math.min(150, Math.max(96, W * 0.30));
+  const mx = 10, my = 10;
+  drawMinimap(ctx, state, mx, my, mm);
+
+  // ---- top-RIGHT: HP / armor / stamina (v2 swap — was top-left) -----------
   const bw = small ? Math.min(150, W * 0.38) : Math.min(200, W * 0.42);
-  const bx = 10, by = 10;
+  const bx = W - bw - 10, by = 10;
   const hpFrac = p.hp / Math.max(1, p.maxHp || 100);
   const hpColor = hpFrac > 0.5 ? '#4caf50' : hpFrac > 0.25 ? '#ff9800' : '#e53935';
   bar(ctx, bx, by, bw, 15, hpFrac, hpColor);
@@ -180,28 +269,34 @@ export function drawHUD(ctx, state, view) {
   bar(ctx, bx, stamY, bw, 9, p.stamina / 100, '#cddc39');
   shadowText(ctx, 'STAMINA', bx + 6, stamY + 8, `bold 10px system-ui, sans-serif`, '#f5f5dc');
 
-  // ---- top-right: minimap --------------------------------------------------
-  const mm = small ? 84 : Math.min(150, Math.max(96, W * 0.30));
-  const mx = W - mm - 10, my = 10;
-  drawMinimap(ctx, state, mx, my, mm);
-
-  // Wave strip geometry (needed by the stats / boss-bar placement below).
-  // BUGFIX W4: on narrow screens the top row (HP bar + centered strip +
-  // minimap) overlapped into an unreadable pile-up (verified at 390px:
-  // the strip covered the HP bar and the minimap). Small screens stack
-  // it instead: row 1 = HP + minimap, row 2 = full-width wave strip,
-  // stats under the strip, boss bar under the stats.
-  const stripW = small ? W - 20 : Math.min(300, W - 20);
+  // Wave strip geometry. Narrow screens (<700px) stack the strip on its own
+  // row under the minimap + HP row, so it never covers either of them.
+  // (The old code only stacked under 500px; with HP now on the right the
+  // centered strip would collide with it at 500–700px too.)
+  const narrow = W < 700;
+  const stripW = narrow ? W - 20 : Math.min(300, Math.max(180, W - 2 * bw - 40));
   const stripX = (W - stripW) / 2;
-  const stripY = small ? 72 : by;
+  const stripY = narrow ? 72 : by;
 
-  // ---- stats under minimap (right-aligned) --------------------------------
-  let sy = small ? stripY + 46 + 8 : my + mm + 8;
+  // ---- stats on the right, under the HP bars --------------------------------
+  // (narrow screens: under the strip instead, so nothing overlaps.)
+  let sy = narrow ? stripY + 46 + 8 : stamY + 9 + 8;
   const stats = [
     [`SCORE  ${state.score || 0}`, '#fff'],
     [`SCRAP  ${state.scrap || 0}`, '#ffd54f'],
     [`KILLS  ${state.kills || 0}`, '#fff'],
   ];
+  // Combo multiplier (v2): only while a streak is alive.
+  if (state.combo && state.combo.mul > 1) {
+    stats.push([`COMBO  x${state.combo.mul.toFixed(1)}  (${state.combo.n})`, '#ffab40']);
+  }
+  // Skill cooldown (v2): name + READY or seconds remaining.
+  const char = CHARACTERS[state.charId || 'raka'];
+  if (char && char.skill) {
+    const cd = Math.max(0, Math.ceil(p.skillCd || 0));
+    stats.push([`SKILL  ${String(char.skill).toUpperCase()}  ${cd > 0 ? cd + 's' : 'READY'}`,
+      cd > 0 ? '#bbb' : '#69f0ae']);
+  }
   for (const [s, c] of stats) {
     shadowText(ctx, s, W - 10, sy + 11, fBody, c, 'right');
     sy += fs + 5;
@@ -231,9 +326,9 @@ export function drawHUD(ctx, state, view) {
   if (state.boss) {
     const b = state.boss;
     const bbw = Math.min(420, W * 0.72);
-    // On small screens the stats sit under the strip, so the boss bar goes
-    // under the stats (sy has advanced past the three stat lines).
-    const bbx = (W - bbw) / 2, bby = small ? sy + 8 : stripY + 56;
+    // On narrow screens the stats sit under the strip, so the boss bar goes
+    // under the stats (sy has advanced past the stat lines).
+    const bbx = (W - bbw) / 2, bby = narrow ? sy + 8 : stripY + 56;
     shadowText(ctx, 'ABOMINATION', W / 2, bby + 12, fBody, '#ff8a80', 'center');
     bar(ctx, bbx, bby + 16, bbw, 12, b.hp / Math.max(1, b.maxHp), '#b71c1c');
   }
@@ -249,22 +344,26 @@ export function drawHUD(ctx, state, view) {
   else reserveTxt = String(p.reserve ? p.reserve.rifle : 0);
   const ax = 10, ay = H - 10;
   shadowText(ctx, wname, ax, ay - 34, fBody, '#ffd54f');
-  // weapon slots 1/2/3
-  const slots = ['pistol', 'shotgun', 'rifle'];
+  // grenades (v2) — count above the weapon name
+  shadowText(ctx, `GRENADES ${p.grenades || 0}  (G)`, ax, ay - 52, fSmall, '#8bc34a');
+  // weapon slots 1-5 (v2: all five weapons; unowned ones are dimmed)
+  const slots = WEAPON_ORDER;
   slots.forEach((w, i) => {
+    const owned = (p.weapons || []).includes(w);
     const sx = ax + i * 22;
-    ctx.fillStyle = w === p.weapon ? 'rgba(255,213,79,0.9)' : 'rgba(0,0,0,0.55)';
+    ctx.fillStyle = w === p.weapon ? 'rgba(255,213,79,0.9)' : owned ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.25)';
     rr(ctx, sx, ay - 30, 18, 18, 4);
     ctx.fill();
     text(ctx, String(i + 1), sx + 9, ay - 17, `bold 11px system-ui, sans-serif`,
-      w === p.weapon ? '#000' : '#ccc', 'center', 'middle');
+      w === p.weapon ? '#000' : owned ? '#ccc' : '#666', 'center', 'middle');
   });
+  const numX = ax + slots.length * 22 + 8;
   if (p.reloading > 0) {
-    shadowText(ctx, 'RELOADING…', ax + 74, ay - 20, fBody, '#ffab91');
+    shadowText(ctx, 'RELOADING…', numX, ay - 20, fBody, '#ffab91');
   } else {
-    shadowText(ctx, `${mag}`, ax + 74, ay - 2, `bold ${small ? 26 : 30}px system-ui, sans-serif`,
+    shadowText(ctx, `${mag}`, numX, ay - 2, `bold ${small ? 26 : 30}px system-ui, sans-serif`,
       mag === 0 ? '#ef5350' : '#fff');
-    shadowText(ctx, `/ ${reserveTxt}`, ax + 74 + (String(mag).length * (small ? 15 : 17)) + 4, ay - 2,
+    shadowText(ctx, `/ ${reserveTxt}`, numX + (String(mag).length * (small ? 15 : 17)) + 4, ay - 2,
       fBody, '#bbb');
   }
 
@@ -291,6 +390,62 @@ export function drawHUD(ctx, state, view) {
     ctx.globalAlpha = 1;
   }
 
+  // ---- alert banner (v2) ------------------------------------------------------
+  // Big top-center banner, below the strip (and below the boss bar when a
+  // boss is up). Narrow screens: below the stats block instead.
+  if (state.alerts && state.alerts.length > 0) {
+    const a = state.alerts[0];
+    const aAlpha = clamp(a.t / 0.5, 0, 1);
+    const colors = {
+      red: ['#ff5252', 'rgba(150,0,0,0.85)'],
+      yellow: ['#ffd54f', 'rgba(110,85,0,0.85)'],
+      green: ['#69f0ae', 'rgba(0,90,45,0.85)'],
+    };
+    const [tc, bg] = colors[a.level] || colors.yellow;
+    const aFont = `bold ${small ? 18 : 22}px system-ui, sans-serif`;
+    ctx.font = aFont;
+    const tw = ctx.measureText(a.text).width + 36;
+    const ayy = narrow ? sy + 8 : (state.boss ? stripY + 98 : stripY + 64);
+    ctx.globalAlpha = aAlpha;
+    ctx.fillStyle = bg;
+    rr(ctx, (W - tw) / 2, ayy, tw, 34, 8);
+    ctx.fill();
+    ctx.strokeStyle = tc;
+    ctx.lineWidth = 2;
+    rr(ctx, (W - tw) / 2, ayy, tw, 34, 8);
+    ctx.stroke();
+    shadowText(ctx, a.text, W / 2, ayy + 23, aFont, tc, 'center');
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- toasts (v2) ------------------------------------------------------------
+  if (state.toasts) {
+    state.toasts.forEach((t, i) => {
+      const ty = H - 100 - i * 22;
+      ctx.globalAlpha = clamp(t.t / 0.4, 0, 1);
+      shadowText(ctx, t.text, W / 2, ty, fBody, '#ffd54f', 'center');
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  // ---- wave-1 contextual hints (v2) -------------------------------------------
+  // One small prompt per first action, then it disappears for good.
+  if (state.mode === 'playing' && state.wave === 1 && state.hints) {
+    let hint = null;
+    if (!state.hints.move) hint = 'Move: WASD / joystick';
+    else if (!state.hints.shot) hint = 'Aim + shoot: mouse / FIRE button';
+    else if (!state.hints.loot) hint = 'Walk over loot & scrap to pick it up';
+    else if (!state.hints.shop) hint = 'Shop opens between waves';
+    if (hint) {
+      ctx.font = fBody;
+      const hw = ctx.measureText(hint).width + 28;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      rr(ctx, (W - hw) / 2, H - 140, hw, 28, 8);
+      ctx.fill();
+      shadowText(ctx, hint, W / 2, H - 120, fBody, '#fff', 'center');
+    }
+  }
+
   // ---- low HP vignette pulse -------------------------------------------------
   if (hpFrac <= 0.25 && state.mode === 'playing') {
     const pulse = 0.10 + 0.08 * Math.sin((state.time || 0) * 6);
@@ -300,6 +455,17 @@ export function drawHUD(ctx, state, view) {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
   }
+
+  // ---- "?" help button (v2) — opens the tutorial ------------------------------
+  const hb = helpButtonRect(view);
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  rr(ctx, hb.x, hb.y, hb.w, hb.h, 6);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1;
+  rr(ctx, hb.x, hb.y, hb.w, hb.h, 6);
+  ctx.stroke();
+  text(ctx, '?', hb.x + hb.w / 2, hb.y + hb.h / 2 + 1, 'bold 16px system-ui, sans-serif', '#fff', 'center', 'middle');
 }
 
 function clockText(state) {
@@ -367,6 +533,13 @@ function drawMinimap(ctx, state, x, y, size) {
     ctx.lineWidth = 1;
     ctx.stroke();
   }
+  // supply drops (v2, gold squares)
+  ctx.fillStyle = '#ffd54f';
+  for (const pk of state.pickups || []) {
+    if (pk.kind === 'supply') {
+      ctx.fillRect(x + pk.x * s - 2, y + pk.y * s - 2, 5, 5);
+    }
+  }
   // viewport rect (main.js sets state.view every frame; BUGFIX W4: this
   // used to read state._viewW/_viewH, which nothing ever sets, so the
   // viewport rect was never drawn).
@@ -383,7 +556,8 @@ function drawMinimap(ctx, state, x, y, size) {
 // dimmed. Now it returns immediately outside menu modes.)
 export function drawScreen(ctx, state, view) {
   if (state.mode !== 'title' && state.mode !== 'shop' &&
-      state.mode !== 'paused' && state.mode !== 'gameover') return;
+      state.mode !== 'paused' && state.mode !== 'gameover' &&
+      state.mode !== 'tutorial') return;
   const W = view.w, H = view.h;
   const small = W < 500;
   ctx.fillStyle = 'rgba(5,8,12,0.78)';
@@ -393,14 +567,15 @@ export function drawScreen(ctx, state, view) {
   if (state.mode === 'shop') return drawShop(ctx, state, view, small);
   if (state.mode === 'paused') return drawPaused(ctx, state, view, small);
   if (state.mode === 'gameover') return drawGameOver(ctx, state, view, small);
+  if (state.mode === 'tutorial') return drawTutorial(ctx, state, view, small);
 }
 
 function drawTitle(ctx, state, view, small) {
   const W = view.w, H = view.h;
   const L = titleLayout(view);
-  const logoSize = small ? 52 : 84;
+  const logoSize = L.logoSize;
   // logo
-  const grad = ctx.createLinearGradient(0, H * 0.16, 0, H * 0.16 + logoSize);
+  const grad = ctx.createLinearGradient(0, L.logoTop, 0, L.logoTop + logoSize);
   grad.addColorStop(0, '#ff8a80');
   grad.addColorStop(0.55, '#e53935');
   grad.addColorStop(1, '#7f0000');
@@ -408,28 +583,65 @@ function drawTitle(ctx, state, view, small) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = 'rgba(0,0,0,0.8)';
-  ctx.fillText('DEADZONE', W / 2 + 4, H * 0.16 + logoSize + 4);
+  ctx.fillText('DEADZONE', W / 2 + 4, L.logoTop + logoSize + 4);
   ctx.fillStyle = grad;
-  ctx.fillText('DEADZONE', W / 2, H * 0.16 + logoSize);
+  ctx.fillText('DEADZONE', W / 2, L.logoTop + logoSize);
   shadowText(ctx, 'GRAYFIELD  •  LAST STAND  •  SURVIVE THE NIGHT', W / 2,
-    H * 0.16 + logoSize + 30, `bold ${small ? 12 : 15}px system-ui, sans-serif`, '#ffd54f', 'center');
+    L.subtitleY, `bold ${small ? 12 : 15}px system-ui, sans-serif`, '#ffd54f', 'center');
 
-  // controls
-  const cy = H * 0.16 + logoSize + 64;
+  // ---- character select (v2) ----
+  shadowText(ctx, 'CHOOSE YOUR SURVIVOR', W / 2, L.labelY,
+    `bold ${small ? 13 : 15}px system-ui, sans-serif`, '#fff', 'center');
+  const selected = state.charId || 'raka';
+  for (const card of L.cards) {
+    const ch = CHARACTERS[card.id];
+    if (!ch) continue;
+    const r = card.rect;
+    const isSel = card.id === selected;
+    ctx.fillStyle = isSel ? 'rgba(255,213,79,0.18)' : 'rgba(0,0,0,0.5)';
+    rr(ctx, r.x, r.y, r.w, r.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = isSel ? '#ffd54f' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = isSel ? 2 : 1;
+    rr(ctx, r.x, r.y, r.w, r.h, 8);
+    ctx.stroke();
+    // mini blocky figure
+    drawMiniBlocky(ctx, r.x + r.w / 2, r.y + 8, small ? 0.9 : 1, ch.color);
+    // name + role
+    text(ctx, ch.name.toUpperCase(), r.x + r.w / 2, r.y + 52,
+      `bold ${small ? 13 : 14}px system-ui, sans-serif`, '#fff', 'center', 'alphabetic');
+    text(ctx, ch.role, r.x + r.w / 2, r.y + 68,
+      `bold ${small ? 10 : 11}px system-ui, sans-serif`, '#bbb', 'center', 'alphabetic');
+    // skill (C)
+    text(ctx, `C: ${ch.skill}`, r.x + r.w / 2, r.y + 86,
+      `bold ${small ? 11 : 12}px system-ui, sans-serif`, '#ffd54f', 'center', 'alphabetic');
+    ctx.font = `${small ? 10 : 11}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ddd';
+    const words = (ch.skillDesc || '').split(' ');
+    let line = '', ly = r.y + 101;
+    for (const word of words) {
+      const test = line ? line + ' ' + word : word;
+      if (ctx.measureText(test).width > r.w - 16 && line) {
+        ctx.fillText(line, r.x + r.w / 2, ly);
+        line = word; ly += 13;
+      } else line = test;
+    }
+    if (line) ctx.fillText(line, r.x + r.w / 2, ly);
+    // stat line
+    text(ctx, ch.stats, r.x + r.w / 2, r.y + r.h - 8,
+      `${small ? 10 : 11}px system-ui, sans-serif`, '#a5d6a7', 'center', 'alphabetic');
+  }
+
+  // controls (compact — the full guide lives in the tutorial)
+  const cy = L.controlsY;
   const lines = [
-    ['WASD / Arrows', 'Move'],
-    ['Mouse', 'Aim  •  Click / Space — Shoot'],
-    ['Shift', 'Sprint (stamina)'],
-    ['R', 'Reload    •    1 / 2 / 3 — Switch weapon'],
-    ['F', 'Melee shove    •    E — Repair barricade'],
-    ['P / Esc', 'Pause    •    M — Mute    •    Q — Quality'],
-    ['Touch', 'Left stick move  •  FIRE + SWAP buttons'],
+    ['WASD', 'Move  •  Mouse — Aim  •  Click / Space — Shoot'],
+    ['R', 'Reload  •  1–5 — Weapons  •  F — Shove  •  E — Repair'],
+    ['G', 'Grenade  •  B — Barricade  •  C — Skill  •  H — Help'],
+    ['Touch', 'Left stick  •  FIRE  •  SWAP  •  GRENADE  •  SKILL'],
   ];
   const lh = small ? 20 : 23;
-  // BUGFIX W4: the two-column layout (key right-aligned at center, value
-  // left-aligned) overflowed the right edge at 390px — long values like
-  // "Reload • 1 / 2 / 3 — Switch weapon" were cut off. Small screens get
-  // one centered line per control instead ("KEY — value").
   if (small) {
     ctx.font = `bold 12px system-ui, sans-serif`;
     ctx.textAlign = 'left';
@@ -463,8 +675,70 @@ function drawTitle(ctx, state, view, small) {
       `bold ${small ? 14 : 16}px system-ui, sans-serif`, '#a5d6a7', 'center');
   }
   drawButton(ctx, L.startBtn, '▶  START', `bold ${small ? 18 : 20}px system-ui, sans-serif`);
-  shadowText(ctx, 'or press ENTER', W / 2, L.startBtn.y + L.startBtn.h + 24,
+  drawButton(ctx, L.tutBtn, 'TUTORIAL', `bold ${small ? 14 : 15}px system-ui, sans-serif`,
+    { fill: 'rgba(60,60,60,0.9)', stroke: '#999' });
+  shadowText(ctx, 'or press ENTER', W / 2, L.tutBtn.y + L.tutBtn.h + 22,
     `bold ${small ? 11 : 12}px system-ui, sans-serif`, '#999', 'center');
+}
+
+// ---- Tutorial overlay (v2) ----
+const TUTORIAL_STEPS = [
+  {
+    title: '1 — MOVE',
+    body: 'WASD or arrow keys to move. On mobile, use the left joystick.\nSprint with Shift — it drains stamina, so save it for escapes.',
+  },
+  {
+    title: '2 — AIM & SHOOT',
+    body: 'Aim with the mouse, click or hold Space to shoot. R reloads,\n1–5 switch weapons. F shoves zombies back when they crowd you.',
+  },
+  {
+    title: '3 — LOOT & SCRAP',
+    body: 'Walk over drops to pick them up: scrap, medkits, ammo, armor,\ngrenades (G to throw) and rare weapons. Elites always drop good loot!',
+  },
+  {
+    title: '4 — SHOP & SURVIVE',
+    body: 'Between waves, spend scrap in the shop. B places a barricade\n(costs scrap). Survive as many waves as you can — a boss comes\nevery 5 waves. Good luck, survivor.',
+  },
+];
+
+function drawTutorial(ctx, state, view, small) {
+  const W = view.w;
+  const L = tutorialLayout(view);
+  const p = L.panel;
+  ctx.fillStyle = 'rgba(10,14,10,0.95)';
+  rr(ctx, p.x, p.y, p.w, p.h, 12);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,213,79,0.5)';
+  ctx.lineWidth = 2;
+  rr(ctx, p.x, p.y, p.w, p.h, 12);
+  ctx.stroke();
+
+  const step = TUTORIAL_STEPS[Math.min(3, Math.max(0, state.tutStep || 0))];
+  shadowText(ctx, 'HOW TO PLAY', W / 2, p.y + 34,
+    `bold ${small ? 18 : 22}px system-ui, sans-serif`, '#ffd54f', 'center');
+  shadowText(ctx, step.title, W / 2, p.y + 72,
+    `bold ${small ? 15 : 17}px system-ui, sans-serif`, '#fff', 'center');
+  ctx.font = `${small ? 13 : 15}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ddd';
+  const lines = step.body.split('\n');
+  lines.forEach((line, i) => {
+    ctx.fillText(line, W / 2, p.y + 104 + i * 22);
+  });
+  // step dots
+  for (let i = 0; i < 4; i++) {
+    ctx.fillStyle = i === (state.tutStep || 0) ? '#ffd54f' : 'rgba(255,255,255,0.3)';
+    ctx.beginPath();
+    ctx.arc(W / 2 + (i - 1.5) * 20, p.y + p.h - 78, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  drawButton(ctx, L.backBtn, '◀ BACK', `bold ${small ? 13 : 14}px system-ui, sans-serif`,
+    { fill: (state.tutStep || 0) === 0 ? 'rgba(60,60,60,0.6)' : 'rgba(60,60,60,0.9)', stroke: '#999' });
+  drawButton(ctx, L.nextBtn, (state.tutStep || 0) >= 3 ? 'DONE ✓' : 'NEXT ▶',
+    `bold ${small ? 13 : 14}px system-ui, sans-serif`,
+    { fill: 'rgba(46,125,50,0.95)', stroke: '#81c784' });
+  drawButton(ctx, L.skipBtn, 'SKIP', `bold ${small ? 11 : 12}px system-ui, sans-serif`,
+    { fill: 'rgba(60,60,60,0.9)', stroke: '#999' });
 }
 
 function drawShop(ctx, state, view, small) {
@@ -520,6 +794,35 @@ function drawPaused(ctx, state, view, small) {
     { fill: 'rgba(46,125,50,0.95)', stroke: '#81c784' });
   drawButton(ctx, L.quitBtn, 'QUIT TO TITLE', `bold ${small ? 17 : 19}px system-ui, sans-serif`,
     { fill: 'rgba(60,60,60,0.9)', stroke: '#999' });
+
+  // ---- bestiary (v2) ----
+  const entries = [
+    ['WALKER', 'Swarm — faster in a group'],
+    ['RUNNER', 'Lunge — dashes after a crouch'],
+    ['BRUTE', 'Ground Slam — AoE, step away'],
+    ['SPITTER', 'Acid Pool — don\'t stand in the goo'],
+    ['BOOMER', 'Explodes on death — hurts zombies too'],
+    ['ELITE', 'Enrage — faster + stronger under 50% HP'],
+    ['BOSS', 'Abomination every 5 waves'],
+  ];
+  const bw2 = Math.min(560, W - 24);
+  const bx2 = (W - bw2) / 2;
+  const by2 = L.quitBtn.y + L.quitBtn.h + 16;
+  const bh = 28 + entries.length * 20;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  rr(ctx, bx2, by2, bw2, bh, 8);
+  ctx.fill();
+  shadowText(ctx, 'BESTIARY', W / 2, by2 + 20, `bold ${small ? 13 : 14}px system-ui, sans-serif`, '#ffd54f', 'center');
+  ctx.font = `${small ? 11 : 12}px system-ui, sans-serif`;
+  entries.forEach(([name, desc], i) => {
+    const y = by2 + 40 + i * 20;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillText(name, W / 2 - 6, y);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ddd';
+    ctx.fillText(desc, W / 2 + 6, y);
+  });
 }
 
 function drawGameOver(ctx, state, view, small) {

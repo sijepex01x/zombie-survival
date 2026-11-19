@@ -24,6 +24,17 @@ state.input = input;
 state.audio = audio;
 initTouch(state, input);
 
+// First run: auto-show the tutorial (v2). The flag is set when the
+// tutorial is closed, so it only appears once.
+try {
+  if (typeof localStorage !== 'undefined' && !localStorage.getItem('deadzone-seen-tutorial')) {
+    state.tutAuto = true;
+    state.tutReturn = 'title';
+    state.tutStep = 0;
+    state.mode = 'tutorial';
+  }
+} catch { /* storage unavailable — tutorial just won't auto-open */ }
+
 // ---- Resize (DPR capped at 2; low quality caps at 1) ----
 let dpr = 1;
 function resize() {
@@ -54,6 +65,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyP' || e.code === 'Escape') {
     if (mode === 'playing') doAction(state, 'pause');
     else if (mode === 'paused') doAction(state, 'resume');
+    else if (mode === 'tutorial') doAction(state, 'tutClose');
   } else if (e.code === 'KeyM') {
     state.muted = !state.muted;
     if (audio && typeof audio.setMuted === 'function') audio.setMuted(state.muted);
@@ -65,16 +77,27 @@ window.addEventListener('keydown', (e) => {
     else if (mode === 'shop') doAction(state, 'closeShop');
     else if (mode === 'paused') doAction(state, 'resume');
     else if (mode === 'gameover') doAction(state, 'restart');
+    else if (mode === 'tutorial') doAction(state, 'tutNext');
   } else if (e.code === 'KeyR') {
     if (mode === 'gameover') doAction(state, 'restart');
+  } else if (e.code === 'KeyH') {
+    // "?" help: open the tutorial from play/shop/pause, close it from inside.
+    if (mode === 'playing' || mode === 'shop' || mode === 'paused') doAction(state, 'tutorial');
+    else if (mode === 'tutorial') doAction(state, 'tutClose');
+  } else if (e.code === 'ArrowRight' && mode === 'tutorial') {
+    doAction(state, 'tutNext');
+  } else if (e.code === 'ArrowLeft' && mode === 'tutorial') {
+    doAction(state, 'tutBack');
   }
 });
 
 // ---- Canvas clicks on menus -> hud.click -> doAction ----
-// (In-game mouse-down firing is handled by input.mouse.down.)
+// (In-game mouse-down firing is handled by input.mouse.down. 'playing' is
+// included so the in-game "?" help button reaches hud.click too.)
 canvas.addEventListener('click', (e) => {
   const mode = state.mode;
-  if (mode !== 'title' && mode !== 'shop' && mode !== 'paused' && mode !== 'gameover') return;
+  if (mode !== 'title' && mode !== 'shop' && mode !== 'paused' && mode !== 'gameover' &&
+      mode !== 'tutorial' && mode !== 'playing') return;
   const r = canvas.getBoundingClientRect();
   const sx = e.clientX - r.left, sy = e.clientY - r.top;
   const action = hudClick(state, sx, sy, currentView);

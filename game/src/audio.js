@@ -23,6 +23,8 @@ export function createAudio() {
     gameOver,
     waveClear,
     click,
+    explosion,
+    alert,
     setMuted,
   };
 
@@ -174,6 +176,26 @@ export function createAudio() {
 
   function click() {
     tone({ type: 'square', f0: 1200, f1: 800, dur: 0.04, vol: 0.12 });
+  }
+
+  // v2: explosion — low boom + noise burst (grenades, boomers).
+  function explosion() {
+    tone({ type: 'sine', f0: 120, f1: 35, dur: 0.5, vol: 0.5 });
+    noise({ dur: 0.4, vol: 0.45, freq: 900, f1: 120 });
+  }
+
+  // v2: alert chime, one per severity — red: low urgent double-beep,
+  // yellow: single mid beep, green: pleasant two-note rise.
+  function alert(severity) {
+    if (severity === 'red') {
+      tone({ type: 'square', f0: 220, dur: 0.12, vol: 0.2 });
+      tone({ type: 'square', f0: 220, dur: 0.12, vol: 0.2, at: 0.18 });
+    } else if (severity === 'green') {
+      tone({ type: 'sine', f0: 660, dur: 0.12, vol: 0.2 });
+      tone({ type: 'sine', f0: 880, dur: 0.18, vol: 0.2, at: 0.1 });
+    } else {
+      tone({ type: 'sine', f0: 440, dur: 0.15, vol: 0.2 });
+    }
   }
 
   return api;

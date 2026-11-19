@@ -4,9 +4,10 @@
 import { CONFIG } from './config.js';
 import {
   createPlayer, updatePlayer, updateZombies, updateBullets,
-  updateParticles, updatePickups, createZombie,
+  updateParticles, updatePickups, createZombie, makeElite,
+  updateGrenades, updateAcidPools, pushAlert, pushToast,
 } from './entities.js';
-import { randomEdgeSpawn, rebuildColliders } from './world.js';
+import { randomEdgeSpawn, randomOpenPoint, rebuildColliders } from './world.js';
 
 const BEST_KEY = 'deadzone-best';
 
@@ -17,9 +18,10 @@ function spawnInterval(wave) {
 
 function pickZombieType(wave) {
   const r = Math.random();
-  if (wave >= 7 && r < 0.15) return 'spitter';
-  if (wave >= 5 && r < 0.30) return 'brute';
-  if (wave >= 3 && r < 0.55) return 'runner';
+  if (wave >= 7 && r < 0.12) return 'spitter';
+  if (wave >= 5 && r < 0.27) return 'brute';
+  if (wave >= 4 && r < 0.39) return 'boomer';
+  if (wave >= 3 && r < 0.60) return 'runner';
   return 'walker';
 }
 
@@ -58,7 +60,7 @@ function readBest() {
 // world, muted and quality) — used by 'start' and 'restart'.
 function resetRun(state, mode) {
   const s = playerSpawn(state.world);
-  state.player = createPlayer(s.x, s.y);
+  state.player = createPlayer(s.x, s.y, state.charId || 'raka');
   state.mode = mode;
   state.time = 0;
   state.dayTime = 0;
@@ -80,6 +82,16 @@ function resetRun(state, mode) {
   state.banner = null;
   state.boss = null;
   state.stats = { shots: 0, hits: 0 };
+  // v2 fields
+  state.combo = { n: 0, t: 0, mul: 1 };
+  state.toasts = [];
+  state.acidPools = [];
+  state.thrown = [];
+  state.alerts = [];
+  state.hints = { move: false, shot: false, loot: false, shop: false };
+  state._lowHpArmed = true;
+  state._lowAmmoArmed = true;
+  state._prevDayTime = 0;
   if (state.camera) { state.camera.x = 0; state.camera.y = 0; }
 }
 
@@ -95,7 +107,7 @@ export function createGame(world, input, audio) {
     zombiesLeft: 0,
     kills: 0, scrap: 0, score: 0,
     best: readBest(),
-    player: createPlayer(s.x, s.y),
+    player: createPlayer(s.x, s.y, 'raka'),
     zombies: [], bullets: [], particles: [], pickups: [], goo: [],
     world, camera: { x: 0, y: 0 },
     shake: 0, banner: null,
@@ -104,6 +116,13 @@ export function createGame(world, input, audio) {
     stats: { shots: 0, hits: 0 },
     muted: false, quality: 'high',
     input: input || null, audio: audio || null,
+    // v2 fields
+    charId: 'raka',
+    combo: { n: 0, t: 0, mul: 1 },
+    toasts: [], acidPools: [], thrown: [], alerts: [],
+    hints: { move: false, shot: false, loot: false, shop: false },
+    tutStep: 0, tutReturn: 'title', tutAuto: false,
+    _lowHpArmed: true, _lowAmmoArmed: true, _prevDayTime: 0,
   };
 }
 
@@ -137,15 +156,45 @@ export function startWave(state, n) {
     state.boss = boss;
     state.spawnQueue = Math.floor(count / 2);
     state.banner = { text: `WAVE ${n} — ABOMINATION`, sub: 'Something huge is coming', t: 3 };
+    pushAlert(state, 'BOSS INCOMING!', 'red');
     state.audio?.horn?.();
     state.audio?.roar?.();
   } else {
-    state.spawnQueue = count;
+    // v2: Elites (wave 3+) spawn up front, glowing and always dropping
+    // good loot. They count toward the wave total, replacing walkers.
+    let eliteCount = 0;
+    if (n >= 3) {
+      eliteCount = n >= 6 ? 2 : 1;
+      for (let e = 0; e < eliteCount; e++) {
+        let ex, ey;
+        try {
+          ({ x: ex, y: ey } = randomEdgeSpawn(state.world, Math.random));
+        } catch {
+          ex = 60; ey = 60;
+        }
+        state.zombies.push(makeElite(createZombie('walker', ex, ey)));
+      }
+      pushAlert(state, 'ELITE SPOTTED!', 'red');
+    }
+    state.spawnQueue = Math.max(0, count - eliteCount);
     state.banner = { text: `WAVE ${n}`, sub: "They're coming", t: 3 };
+    pushAlert(state, 'WAVE INCOMING!', 'yellow');
     state.audio?.horn?.();
   }
+  // v2: Supply Drop every 3 waves — a rare crate at a random open point,
+  // marked on the minimap. It stays until collected.
+  if (n % 3 === 0) {
+    let pt = null;
+    try {
+      pt = randomOpenPoint(state.world, Math.random);
+    } catch {
+      pt = { x: (state.world?.w || 2600) / 2, y: (state.world?.h || 1800) / 2 };
+    }
+    state.pickups.push({ kind: 'supply', x: pt.x, y: pt.y, amount: 0, t: 0 });
+    pushAlert(state, 'SUPPLY DROP!', 'green');
+  }
   state.spawnT = 0.6;
-  state.zombiesLeft = state.spawnQueue + (isBossWave ? 1 : 0);
+  state.zombiesLeft = state.zombies.length + state.spawnQueue;
 }
 
 // ---------------------------------------------------------------- shop
@@ -158,7 +207,7 @@ export function buyItem(state, id) {
   switch (id) {
     case 'shells': p.reserve.shells += 12; break;
     case 'rifle': p.reserve.rifle += 30; break;
-    case 'medkit': p.hp = Math.min(p.maxHp, p.hp + 50); break;
+    case 'medkit': p.hp = Math.min(p.maxHp, p.hp + Math.round(50 * (p.medkitMul || 1))); break;
     case 'armor': p.armor += 50; break;
     case 'repair':
       for (const b of state.world?.barricades || []) b.hp = b.maxHp;
@@ -168,6 +217,17 @@ export function buyItem(state, id) {
       break;
     case 'damage': p.dmgMul = p.dmgMul * 1.15; break;
     case 'maxhp': p.maxHp += 25; p.hp = Math.min(p.maxHp, p.hp + 25); break;
+    // v2: buyable loot weapons (expensive by design) + grenades.
+    case 'smg':
+    case 'sniper': {
+      if ((p.weapons || []).includes(id)) return false; // already owned
+      p.weapons.push(id);
+      p.mag[id] = CONFIG.WEAPONS[id].mag;
+      p.weapon = id;
+      pushToast(state, `${CONFIG.WEAPONS[id].name} bought!`);
+      break;
+    }
+    case 'grenade': p.grenades = (p.grenades || 0) + 2; break;
     default: return false;
   }
   state.scrap -= item.cost;
@@ -220,7 +280,50 @@ export function doAction(state, action) {
     return true;
   }
   if (action.startsWith('buy:')) return buyItem(state, action.slice(4));
+  // v2: character select on the title screen.
+  if (action.startsWith('char:')) {
+    const id = action.slice(5);
+    if ((CONFIG.CHARACTERS || {})[id]) {
+      state.charId = id;
+      state.audio?.click?.();
+      return true;
+    }
+    return false;
+  }
+  // v2: tutorial overlay.
+  if (action === 'tutorial') {
+    if (state.mode === 'tutorial') return false;
+    state.tutReturn = state.mode === 'tutorial' ? 'title' : state.mode;
+    state.tutStep = 0;
+    state.mode = 'tutorial';
+    state.audio?.click?.();
+    return true;
+  }
+  if (action === 'tutNext') {
+    if (state.mode !== 'tutorial') return false;
+    if (state.tutStep < 3) { state.tutStep += 1; state.audio?.click?.(); return true; }
+    return closeTutorial(state);
+  }
+  if (action === 'tutBack') {
+    if (state.mode !== 'tutorial') return false;
+    if (state.tutStep > 0) { state.tutStep -= 1; state.audio?.click?.(); }
+    return true;
+  }
+  if (action === 'tutSkip' || action === 'tutClose') return closeTutorial(state);
   return false;
+}
+
+// Close the tutorial overlay: back to where it was opened from, and mark
+// it as seen so it doesn't auto-open again.
+function closeTutorial(state) {
+  if (state.mode !== 'tutorial') return false;
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('deadzone-seen-tutorial', '1');
+  } catch { /* storage unavailable — tutorial just opens again next run */ }
+  state.tutAuto = false;
+  state.mode = state.tutReturn === 'tutorial' ? 'title' : (state.tutReturn || 'title');
+  state.audio?.click?.();
+  return true;
 }
 
 // ---------------------------------------------------------------- master update
@@ -246,6 +349,11 @@ export function updateGame(state, dt) {
   }
 
   state.time += dt;
+  // Night falling alert: dayTime crosses 55 (dusk) once per cycle.
+  if ((state._prevDayTime || 0) < 55 && state.dayTime >= 55) {
+    pushAlert(state, 'NIGHT FALLING!', 'yellow');
+  }
+  state._prevDayTime = state.dayTime;
   state.dayTime = (state.dayTime + dt) % CONFIG.DAY_LENGTH;
 
   updatePlayer(state, dt);
@@ -253,6 +361,45 @@ export function updateGame(state, dt) {
   updateBullets(state, dt);
   updateParticles(state, dt);
   updatePickups(state, dt);
+  updateGrenades(state, dt);
+  updateAcidPools(state, dt);
+
+  // --- combo decay (v2): the multiplier resets after 3s without a kill.
+  if (state.combo) {
+    if (state.combo.t > 0) {
+      state.combo.t -= dt;
+      if (state.combo.t <= 0) { state.combo.n = 0; state.combo.mul = 1; }
+    }
+  }
+  // --- toasts + alerts tick down.
+  if (state.toasts) {
+    for (const t of [...state.toasts]) {
+      t.t -= dt;
+      if (t.t <= 0) state.toasts.splice(state.toasts.indexOf(t), 1);
+    }
+  }
+  if (state.alerts && state.alerts.length > 0) {
+    state.alerts[0].t -= dt;
+    if (state.alerts[0].t <= 0) state.alerts.shift();
+  }
+
+  // --- low HP / low ammo alerts (v2, armed when the condition clears).
+  const pl = state.player;
+  if (pl && !pl.dead) {
+    if (pl.hp <= pl.maxHp * 0.25) {
+      if (state._lowHpArmed) { pushAlert(state, 'LOW HP!', 'red'); state._lowHpArmed = false; }
+    } else if (pl.hp > pl.maxHp * 0.4) {
+      state._lowHpArmed = true;
+    }
+    const wcfg = CONFIG.WEAPONS[pl.weapon] || {};
+    const outOfAmmo = wcfg.ammo !== 'inf' && (pl.mag?.[pl.weapon] || 0) <= 0 &&
+      (pl.reserve?.[wcfg.ammo] || 0) <= 0;
+    if (outOfAmmo) {
+      if (state._lowAmmoArmed) { pushAlert(state, 'LOW AMMO!', 'yellow'); state._lowAmmoArmed = false; }
+    } else {
+      state._lowAmmoArmed = true;
+    }
+  }
 
   // --- wave flow
   if (state.waveState === 'spawning') {
@@ -272,6 +419,7 @@ export function updateGame(state, dt) {
       state.waveState = 'breather';
       state.breatherT = CONFIG.WAVES.breather;
       state.banner = { text: 'WAVE CLEARED', sub: 'Breather — patch up, then the shop', t: 3 };
+      pushAlert(state, 'WAVE CLEAR!', 'green');
       state.audio?.waveClear?.();
     }
   } else if (state.waveState === 'breather') {
@@ -279,6 +427,7 @@ export function updateGame(state, dt) {
     if (state.breatherT <= 0) {
       state.waveState = 'idle';
       state.mode = 'shop';
+      if (state.hints) state.hints.shop = true; // wave-1 tutorial hint
     }
   }
   state.zombiesLeft = state.zombies.length + state.spawnQueue;
